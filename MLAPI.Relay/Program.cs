@@ -5,7 +5,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using UnetServerDll;
 
@@ -13,9 +15,13 @@ namespace MLAPI.Relay
 {
     public static class Program
     {
+        public static String MATCHMAKING_SERVER_IP = "127.0.0.1";
+        public static int MATCHMAKING_SERVER_PORT = 7878;
+
         public static Transport Transport;
         public static readonly List<Room> Rooms = new List<Room>();
         public static readonly Dictionary<EndPoint, Room> ServerAddressToRoom = new Dictionary<EndPoint, Room>();
+        public static readonly Dictionary<ulong, ConnectionEndpoint> connectionIdToEndpoint = new Dictionary<ulong, ConnectionEndpoint>();
         public static byte DEFAULT_CHANNEL_BYTE = 0;
 
         public static byte[] MESSAGE_BUFFER;
@@ -317,6 +323,8 @@ namespace MLAPI.Relay
 
                                         // Send connect to client
                                         Transport.Send(new ArraySegment<byte>(MESSAGE_BUFFER, 0, 19), DEFAULT_CHANNEL_BYTE, connectionId);
+
+                                        OnNewServerConnected(ipAddress.ToString(), endpoint.Port, connectionId);
                                     }
                                     break;
                                 case MessageType.ConnectToServer:
@@ -482,6 +490,7 @@ namespace MLAPI.Relay
                                                                     ((ulong)payload.Array[payload.Offset + 6] << 48) |
                                                                     ((ulong)payload.Array[payload.Offset + 7] << 56));
 
+                                        OnPeerDisconnected(connectionId);
                                         if (Config.EnableRuntimeMetaLogging) Console.WriteLine("[INFO] Client disconnect request");
 
                                         foreach (Room room in Rooms)
@@ -499,6 +508,7 @@ namespace MLAPI.Relay
                         break;
                     case NetEventType.Disconnect:
                         {
+                            OnPeerDisconnected(connectionId);
                             if (Config.EnableRuntimeMetaLogging) Console.WriteLine("[INFO] Peer disconnected");
 
                             foreach (Room room in Rooms)
@@ -528,6 +538,66 @@ namespace MLAPI.Relay
 
             return false;
         }
+
+        private static void OnNewServerConnected(String address, int port, ulong connectionId)
+        {
+            String msg = "SC" + address + "P" + port.ToString();
+            Connect(MATCHMAKING_SERVER_IP, MATCHMAKING_SERVER_PORT, msg);
+            connectionIdToEndpoint.Add(connectionId, new ConnectionEndpoint(address, port));
+        }
+
+        private static void OnPeerDisconnected(ulong connectionId)
+        {
+            ConnectionEndpoint endpoint = connectionIdToEndpoint.GetValueOrDefault(connectionId);
+            String msg = "SD" + endpoint.address + "P" + endpoint.port.ToString();
+            Connect(MATCHMAKING_SERVER_IP, MATCHMAKING_SERVER_PORT, msg);
+        }
+
+        static void Connect(String server, Int32 port, String message)
+        {
+            try
+            {
+                TcpClient client = new TcpClient(server, port);
+
+                // Translate the passed message into ASCII and store it as a Byte array.
+                Byte[] data = System.Text.Encoding.ASCII.GetBytes(message + "\n");
+
+                // Get a client stream for reading and writing.
+                //  Stream stream = client.GetStream();
+
+                NetworkStream stream = client.GetStream();
+
+                // Send the message to the connected TcpServer.
+                stream.Write(data, 0, data.Length);
+
+                Console.WriteLine("Sent: {0}", message);
+
+                // Receive the TcpServer.response.
+
+                // Buffer to store the response bytes.
+                data = new Byte[256];
+
+                // String to store the response ASCII representation.
+                String responseData = String.Empty;
+
+                // Read the first batch of the TcpServer response bytes.
+                Int32 bytes = stream.Read(data, 0, data.Length);
+                responseData = System.Text.Encoding.ASCII.GetString(data, 0, bytes);
+                Console.WriteLine("Received: {0}", responseData);
+
+                // Close everything.
+                stream.Close();
+                client.Close();
+            }
+            catch (ArgumentNullException e)
+            {
+                Console.WriteLine("ArgumentNullException: {0}", e);
+            }
+            catch (SocketException e)
+            {
+                Console.WriteLine("SocketException: {0}", e);
+            }
+        }
     }
 
     public class InvalidConfigException : Exception
@@ -535,4 +605,5 @@ namespace MLAPI.Relay
         public InvalidConfigException() { }
         public InvalidConfigException(string issue) : base(issue) { }
     }
+
 }
